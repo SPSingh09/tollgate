@@ -1,11 +1,14 @@
-// Package tollgate provides interfaces and shared types for building
-// rate limiters in Go.
+// Package tollgate provides rate limiters for Go.
 //
-// tollgate itself does not implement a rate-limiting algorithm. It defines
-// the Limiter interface that algorithm implementations satisfy, along with
-// the supporting types (Rate, Result) and a Clock abstraction so that
+// The Limiter interface is satisfied by every algorithm implementation, along
+// with the supporting types (Rate, Result) and a Clock abstraction so that
 // implementations can be tested without relying on wall-clock time.
 //
-// This package is a work in progress; algorithm implementations (token
-// bucket, sliding window, etc.) will live in subpackages.
+// In-memory algorithms live in this package, so callers write, for example:
+//
+//	limiter, err := tollgate.NewTokenBucket(tollgate.PerSecond(10))
+//
+// Subpackages are reserved for code that pulls in separate dependencies, such
+// as a Redis-backed store or net/http middleware, so that importing tollgate
+// alone stays dependency-free.
 package tollgate
