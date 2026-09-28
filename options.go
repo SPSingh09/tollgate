@@ -47,6 +47,15 @@ func WithShards(n int) Option {
 	}
 }
 
+// newLimiterConfig validates rate, then applies and validates opts.
+// Constructors wrap the returned error with their own name.
+func newLimiterConfig(rate Rate, opts []Option) (config, error) {
+	if err := rate.Validate(); err != nil {
+		return config{}, err
+	}
+	return newConfig(opts)
+}
+
 // newConfig applies opts over the defaults and validates the result.
 func newConfig(opts []Option) (config, error) {
 	cfg := config{
