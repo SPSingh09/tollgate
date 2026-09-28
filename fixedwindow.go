@@ -22,6 +22,9 @@ type windowCount struct {
 // requests in a span much shorter than Period. Use SlidingWindow or
 // TokenBucket when that matters.
 //
+// A key's counter is deleted once its window has ended, so memory tracks
+// recently active keys rather than every key ever seen.
+//
 // Rate.Burst is ignored; it applies only to TokenBucket.
 // A FixedWindow is safe for concurrent use.
 type FixedWindow struct {
@@ -80,6 +83,9 @@ func (fw *FixedWindow) Allow(ctx context.Context, key string) (Result, error) {
 		c.count++
 	}
 	s.m[key] = c
+	// Once its window has ended, an entry's next Allow would reset it, just
+	// as for a key never seen, so it can be deleted.
+	s.sweepIfDue(func(c windowCount) bool { return w > c.window })
 	s.mu.Unlock()
 
 	reset := time.Duration((c.window+1)*fw.period - now)

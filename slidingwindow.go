@@ -30,6 +30,9 @@ type slidingCount struct {
 // The estimate assumes requests in the previous window were evenly spread,
 // so it is an approximation of a true sliding log.
 //
+// A key's counters are deleted once both of its windows have ended, so memory
+// tracks recently active keys rather than every key ever seen.
+//
 // Rate.Burst is ignored; it applies only to TokenBucket.
 // A SlidingWindow is safe for concurrent use.
 type SlidingWindow struct {
@@ -81,21 +84,25 @@ func (sw *SlidingWindow) Allow(ctx context.Context, key string) (Result, error) 
 
 	s.mu.Lock()
 	c, ok := s.m[key]
-	switch {
-	case !ok || w > c.window+1:
-		// New key, or idle for at least a whole window.
+	if ok {
+		c = c.advance(w)
+	} else {
 		c = slidingCount{window: w}
-	case w == c.window+1:
-		c = slidingCount{window: w, prev: c.curr}
 	}
-	// If w < c.window the clock moved backwards; keep the stored windows
-	// and clamp elapsed below.
+	// If w < c.window the clock moved backwards; advance kept the stored
+	// windows, and elapsed is clamped here.
 	elapsed := min(max(now-c.window*sw.period, 0), sw.period-1)
 	allowed := sw.fits(c, elapsed)
 	if allowed {
 		c.curr++
 	}
 	s.m[key] = c
+	// Once both its windows have ended, an entry advances to all zeros, the
+	// same state as a key never seen, so it can be deleted.
+	s.sweepIfDue(func(c slidingCount) bool {
+		a := c.advance(w)
+		return a.prev == 0 && a.curr == 0
+	})
 	s.mu.Unlock()
 
 	res := Result{
@@ -108,6 +115,20 @@ func (sw *SlidingWindow) Allow(ctx context.Context, key string) (Result, error) 
 		res.RetryAfter = sw.retryAfter(c, elapsed)
 	}
 	return res, nil
+}
+
+// advance returns c moved forward to window w: the current count becomes the
+// previous one after one window, and both are dropped after two or more. It
+// returns c unchanged if w is not after c.window, which happens only when the
+// clock moves backwards.
+func (c slidingCount) advance(w int64) slidingCount {
+	switch {
+	case w == c.window+1:
+		return slidingCount{window: w, prev: c.curr}
+	case w > c.window+1:
+		return slidingCount{window: w}
+	}
+	return c
 }
 
 // fits reports whether one more request fits under the limit, elapsed

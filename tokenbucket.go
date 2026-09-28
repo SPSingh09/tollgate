@@ -20,12 +20,16 @@ type bucket struct {
 //
 // Refill is computed lazily on each call, so there are no background
 // goroutines and the cost per call is O(1) regardless of the number of keys.
+// A key's bucket is deleted once it has gone untouched for as long as a
+// refill from empty takes (Burst/Limit × Period), so memory tracks recently
+// active keys rather than every key ever seen.
 // A TokenBucket is safe for concurrent use.
 type TokenBucket struct {
 	monoClock
 	burst      float64 // bucket capacity
 	refillRate float64 // tokens added per second
 	limit      int     // burst as reported in Result.Limit
+	idleAfter  int64   // nanoseconds untouched before a bucket may be deleted
 	store      shardedStore[bucket]
 }
 
@@ -49,13 +53,15 @@ func NewTokenBucket(rate Rate, opts ...Option) (*TokenBucket, error) {
 		burst = rate.Limit
 	}
 
-	return &TokenBucket{
+	tb := &TokenBucket{
 		monoClock:  newMonoClock(cfg.clock),
 		burst:      float64(burst),
 		refillRate: float64(rate.Limit) / rate.Period.Seconds(),
 		limit:      burst,
 		store:      newShardedStore[bucket](cfg.shards),
-	}, nil
+	}
+	tb.idleAfter = int64(tb.timeToFill(tb.burst))
+	return tb, nil
 }
 
 // Allow reports whether the request identified by key may proceed, consuming
@@ -79,18 +85,14 @@ func (tb *TokenBucket) Allow(ctx context.Context, key string) (Result, error) {
 	if !ok {
 		b = bucket{tokens: tb.burst, last: now}
 	}
-	// Ignore a clock that moves backwards rather than draining the bucket.
-	if now > b.last {
-		elapsed := time.Duration(now - b.last).Seconds()
-		b.tokens = min(tb.burst, b.tokens+elapsed*tb.refillRate)
-		b.last = now
-	}
+	b = tb.refill(b, now)
 	allowed := b.tokens >= 1
 	if allowed {
 		b.tokens--
 	}
 	s.m[key] = b
 	tokens := b.tokens
+	s.sweepIfDue(func(b bucket) bool { return tb.idle(b, now) })
 	s.mu.Unlock()
 
 	res := Result{
@@ -103,6 +105,34 @@ func (tb *TokenBucket) Allow(ctx context.Context, key string) (Result, error) {
 		res.RetryAfter = tb.timeToFill(1 - tokens)
 	}
 	return res, nil
+}
+
+// refill returns b with the tokens earned since b.last added, capped at the
+// burst. A clock that moves backwards is ignored rather than draining the
+// bucket.
+func (tb *TokenBucket) refill(b bucket, now int64) bucket {
+	if now > b.last {
+		elapsed := time.Duration(now - b.last).Seconds()
+		b.tokens = min(tb.burst, b.tokens+elapsed*tb.refillRate)
+		b.last = now
+	}
+	return b
+}
+
+// idle reports whether b can be deleted: it has gone untouched for at least
+// idleAfter, the time to refill from empty, and so has refilled to the
+// burst. A new key also starts full, so such a bucket is indistinguishable
+// from a key never seen. The refill check is kept alongside the time check
+// so that deletion stays exact whatever the floating-point rounding.
+//
+// Deleting a bucket as soon as it is full would be equally correct, but a
+// key that returns before idleAfter would then be deleted and re-created on
+// every visit: at 1000/sec a bucket refills one token in 1ms, so with 100k
+// keys revisited every ~20ms, nearly every call paid for a delete and an
+// insert. Waiting for a full refill keeps returning keys while still
+// reclaiming idle ones within one refill period.
+func (tb *TokenBucket) idle(b bucket, now int64) bool {
+	return now-b.last >= tb.idleAfter && tb.refill(b, now).tokens >= tb.burst
 }
 
 // timeToFill returns how long it takes to refill n tokens, rounded up to the

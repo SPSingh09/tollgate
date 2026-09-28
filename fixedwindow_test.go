@@ -88,24 +88,6 @@ func TestFixedWindowResult(t *testing.T) {
 	runResultSteps(t, fw, clock, steps)
 }
 
-func TestFixedWindowAlignsToWallClock(t *testing.T) {
-	// Construct 300ms into a wall-clock second: the first window still ends
-	// on the second, not 1s after construction.
-	clock := newFakeClock()
-	clock.Advance(300 * time.Millisecond)
-	fw, err := NewFixedWindow(PerSecond(10), WithClock(clock))
-	if err != nil {
-		t.Fatalf("NewFixedWindow() = %v", err)
-	}
-
-	runResultSteps(t, fw, clock, []resultStep{
-		{
-			name: "first request",
-			want: Result{Allowed: true, Limit: 10, Remaining: 9, ResetAfter: 700 * time.Millisecond},
-		},
-	})
-}
-
 func TestFixedWindowClockBackwards(t *testing.T) {
 	fw, clock := newTestFixedWindow(t, PerSecond(10))
 

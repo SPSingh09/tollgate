@@ -38,6 +38,34 @@ func asLimiter[L Limiter](newL func(Rate, ...Option) (L, error)) func(Rate, ...O
 	}
 }
 
+// storeKeys returns the keys currently held by l's store.
+func storeKeys(t *testing.T, l Limiter) map[string]bool {
+	t.Helper()
+	switch l := l.(type) {
+	case *TokenBucket:
+		return keysOf(&l.store)
+	case *FixedWindow:
+		return keysOf(&l.store)
+	case *SlidingWindow:
+		return keysOf(&l.store)
+	}
+	t.Fatalf("storeKeys: unknown limiter type %T", l)
+	return nil
+}
+
+func keysOf[V any](s *shardedStore[V]) map[string]bool {
+	keys := make(map[string]bool)
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.Lock()
+		for k := range sh.m {
+			keys[k] = true
+		}
+		sh.mu.Unlock()
+	}
+	return keys
+}
+
 // allowN calls Allow n times for key and returns how many were allowed.
 func allowN(t *testing.T, l Limiter, key string, n int) int {
 	t.Helper()

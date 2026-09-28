@@ -143,6 +143,64 @@ func TestLimitersConcurrentSingleKey(t *testing.T) {
 	}
 }
 
+// TestWindowLimitersFirstWindowIsPartial documents a consequence of aligning
+// windows to the wall clock: a limiter built part-way through a window gets a
+// shorter first window. Built at 10:00:30, a per-minute limiter's first
+// window is 10:00:00–10:01:00, so only 30 seconds of it remain.
+func TestWindowLimitersFirstWindowIsPartial(t *testing.T) {
+	tests := []struct {
+		ctor limiterCtor
+		// wantFirstReset is ResetAfter on the first request, at 10:00:30.
+		wantFirstReset time.Duration
+		// wantAtBoundary is how many of 5 requests pass at 10:01:00, after
+		// the limit of 5 was used up at 10:00:30.
+		wantAtBoundary int
+	}{
+		{
+			// The count resets at 10:01:00, 30 seconds after construction.
+			ctor:           limiterCtors[1],
+			wantFirstReset: 30 * time.Second,
+			wantAtBoundary: 5,
+		},
+		{
+			// Requests in the partial window are weighted as if spread over
+			// the whole of it, so at 10:01:00 they still count in full and
+			// decay over the following minute: the estimate reaches zero at
+			// 10:02:00, 90 seconds after construction.
+			ctor:           limiterCtors[2],
+			wantFirstReset: 90 * time.Second,
+			wantAtBoundary: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.ctor.name, func(t *testing.T) {
+			clock := newFakeClock()
+			clock.Advance(10*time.Hour + 30*time.Second)
+			l, err := tt.ctor.new(PerMinute(5), WithClock(clock))
+			if err != nil {
+				t.Fatalf("constructor = %v", err)
+			}
+
+			res, err := l.Allow(context.Background(), "k")
+			if err != nil {
+				t.Fatalf("Allow() = %v", err)
+			}
+			if res.ResetAfter != tt.wantFirstReset {
+				t.Fatalf("first ResetAfter = %s, want %s", res.ResetAfter, tt.wantFirstReset)
+			}
+			if got := allowN(t, l, "k", 10); got != 4 {
+				t.Fatalf("rest of first window: allowed %d, want 4", got)
+			}
+
+			clock.Advance(30 * time.Second)
+			if got := allowN(t, l, "k", 5); got != tt.wantAtBoundary {
+				t.Fatalf("at 10:01:00: allowed %d, want %d", got, tt.wantAtBoundary)
+			}
+		})
+	}
+}
+
 func TestWindowLimitersIgnoreBurst(t *testing.T) {
 	rate := Rate{Limit: 5, Period: time.Second, Burst: 20}
 
