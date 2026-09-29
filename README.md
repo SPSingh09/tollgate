@@ -1,5 +1,7 @@
 # tollgate
 
+[![CI](https://github.com/SPSingh09/tollgate/actions/workflows/ci.yml/badge.svg)](https://github.com/SPSingh09/tollgate/actions/workflows/ci.yml)
+
 In-memory rate limiters for Go: token bucket, fixed window and sliding window,
 behind one `Limiter` interface.
 
