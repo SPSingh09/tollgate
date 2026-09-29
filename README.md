@@ -9,14 +9,12 @@ if err != nil {
 	return err
 }
 
-res, err := limiter.Allow(ctx, clientIP)
+res, err := limiter.Allow(ctx, userID)
 if err != nil {
 	return err
 }
 if !res.Allowed {
-	w.Header().Set("Retry-After", strconv.Itoa(int(res.RetryAfter.Seconds())+1))
-	http.Error(w, "rate limited", http.StatusTooManyRequests)
-	return
+	// Wait res.RetryAfter before trying again.
 }
 ```
 
@@ -28,6 +26,41 @@ if !res.Allowed {
 
 All three are safe for concurrent use, run no background goroutines, and
 delete a key's state once it is indistinguishable from a key never seen.
+
+## HTTP middleware
+
+The `middleware` subpackage applies any `Limiter` to a `net/http` handler:
+
+```go
+import "github.com/SPSingh09/tollgate/middleware"
+
+limiter, err := tollgate.NewSlidingWindow(tollgate.PerMinute(100))
+if err != nil {
+	log.Fatal(err)
+}
+
+limit := middleware.RateLimit(limiter, middleware.KeyByRemoteAddr)
+http.Handle("/api/", limit(apiHandler))
+```
+
+Every response carries `RateLimit-Limit`, `RateLimit-Remaining` and
+`RateLimit-Reset`. Denied requests get `429 Too Many Requests` with
+`Retry-After`, and the handler behind the middleware is not called.
+
+Choosing a key function:
+
+| Key function | Use when |
+|---|---|
+| `KeyByRemoteAddr` | Clients connect to your server directly. |
+| `KeyByIP` | Exactly one trusted reverse proxy sits in front and appends to `X-Forwarded-For`. Without one, clients can forge the header and bypass the limit. |
+| `KeyByHeader(name)` | The key is in a header: an authenticated API key, or a client-address header set by your outermost proxy. |
+
+If the limiter returns an error, the middleware responds `503` by default
+(fail-closed). `middleware.WithFailOpen()` lets requests through instead,
+trading protection against overload for availability when the limiter is
+broken. A request whose key is empty is rejected with `400` in either mode,
+so a client cannot bypass the limit by omitting the header its key comes
+from.
 
 ## Performance
 
